@@ -1,0 +1,10 @@
+{
+  "description": "Create personalized travel plans with an interactive chatbot, customizable settings, and a history feature for seamless trip organization.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
