@@ -1,0 +1,7 @@
+streamlit
+google-generativeai
+chromadb
+psycopg2-binary
+python-dotenv
+requests
+pandas

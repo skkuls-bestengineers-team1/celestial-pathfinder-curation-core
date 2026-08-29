@@ -1,0 +1,1 @@
+"""PostgreSQL chat history."""
