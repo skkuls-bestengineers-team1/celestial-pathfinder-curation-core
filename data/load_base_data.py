@@ -132,23 +132,23 @@ def insert_trips(engine : Engine, trip_df : pd.DataFrame, ) -> int:
         raise
         
 
-# def load_database_main():
-#     config = load_database_config()
+def load_database_main():
+    config = load_database_config()
 
-#     engine = create_database_engine(config)
+    engine = create_database_engine(config)
 
-#     # 1. schema 생성
-#     check_schema(engine)
+    # 1. schema 생성
+    check_schema(engine)
 
-#     # 2. table 생성
-#     Base.metadata.create_all(engine)
+    # 2. table 생성
+    Base.metadata.create_all(engine)
 
-#     # 3. table 존재 확인
-#     check_tables(engine)
+    # 3. table 존재 확인
+    check_tables(engine)
 
-#     # 4. table insert
-#     rowcount = insert_trips(engine, trip_df=trips_df)
-#     print(f"{rowcount}건 insert")
+    # 4. table insert
+    rowcount = insert_trips(engine, trip_df=trips_df)
+    print(f"{rowcount}건 insert")
 
-# if __name__ == "__main__":
-#     load_database_main()
+if __name__ == "__main__":
+    load_database_main()
