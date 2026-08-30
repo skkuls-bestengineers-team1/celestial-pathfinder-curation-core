@@ -1,28 +1,19 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-
-type Message = {
-  id: number;
-  role: "user" | "bot";
-  text: string;
-  time: string;
-};
-
-type HistoryItem = {
-  id: number;
-  title: string;
-  date: string;
-  preview: string;
-};
+import {
+  type ChatSession,
+  type StoredMessage as Message,
+  WELCOME_MESSAGE,
+  createSession,
+  hasUserMessage,
+  loadActiveId,
+  loadSessions,
+  refreshSession,
+  saveActiveId,
+  saveSessions,
+  upsertSession,
+} from "./chatHistory";
 
 type PlanTab = "region" | "date" | "style" | "transport";
-
-const HISTORY: HistoryItem[] = [
-  { id: 1, title: "제주도 힐링 여행", date: "2026.08.20", preview: "3박 4일 · 자차" },
-  { id: 2, title: "강원도 자연 힐링", date: "2026.08.14", preview: "2박 3일 · 대중교통" },
-  { id: 3, title: "부산 도심 웰니스", date: "2026.08.05", preview: "1박 2일 · 도보" },
-  { id: 4, title: "전주 한옥마을 여행", date: "2026.07.28", preview: "당일치기 · 자차" },
-  { id: 5, title: "경주 역사 문화 탐방", date: "2026.07.15", preview: "2박 3일 · 대중교통" },
-];
 
 const CATEGORIES = [
   { id: "healing", label: "힐링", icon: "🌿" },
@@ -173,9 +164,8 @@ type SearchResultItem = {
 };
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>([
-    { id: 1, role: "bot", text: "안녕하세요! 여행 계획 도우미입니다 ✈️\n어떤 여행을 꿈꾸고 계신가요? 원하시는 여행 스타일이나 목적지를 알려주세요.", time: "지금" },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [showPlanPanel, setShowPlanPanel] = useState(false);
@@ -184,7 +174,8 @@ export default function App() {
   const [planRegion, setPlanRegion] = useState<string | null>(null);
   const [dateRange, setDateRange] = useState<[Date | null, Date | null]>([null, null]);
   const [transport, setTransport] = useState<string | null>(null);
-  const [activeHistory, setActiveHistory] = useState<number | null>(null);
+  const [activeHistory, setActiveHistory] = useState<string | null>(null);
+  const historyReady = useRef(false);
 
   const [rightWidth, setRightWidth] = useState(DEFAULT_WIDTH);
 
@@ -286,6 +277,92 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    const stored = loadSessions();
+    if (stored.length > 0) {
+      const activeId = loadActiveId();
+      const current = stored.find((item) => item.id === activeId) ?? stored[0];
+      setSessions(stored);
+      setActiveHistory(current.id);
+      setMessages(current.messages.length ? current.messages : [WELCOME_MESSAGE]);
+    } else {
+      const created = createSession();
+      setSessions([created]);
+      setActiveHistory(created.id);
+      setMessages(created.messages);
+      saveSessions([created]);
+      saveActiveId(created.id);
+    }
+    historyReady.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!historyReady.current || !activeHistory) return;
+    setSessions((prev) => {
+      const current = prev.find((item) => item.id === activeHistory) ?? { ...createSession(messages), id: activeHistory };
+      const updated = refreshSession({ ...current, id: activeHistory }, messages);
+      const others = prev.filter((item) => item.id !== activeHistory);
+      const keptOthers = hasUserMessage(updated.messages)
+        ? others
+        : others.filter((item) => hasUserMessage(item.messages));
+      const next = upsertSession(keptOthers, updated);
+      saveSessions(next);
+      saveActiveId(activeHistory);
+      return next;
+    });
+  }, [messages, activeHistory]);
+
+  function startNewChat() {
+    if (isSending) return;
+    const current = sessions.find((item) => item.id === activeHistory);
+    if (current && !hasUserMessage(current.messages)) {
+      setMessages([WELCOME_MESSAGE]);
+      setInput("");
+      setShowPlanPanel(false);
+      return;
+    }
+    const created = createSession();
+    setSessions((prev) => upsertSession(prev, created));
+    setActiveHistory(created.id);
+    setMessages(created.messages);
+    setInput("");
+    setShowPlanPanel(false);
+    saveActiveId(created.id);
+  }
+
+  function openChat(id: string) {
+    if (isSending || id === activeHistory) return;
+    const target = sessions.find((item) => item.id === id);
+    if (!target) return;
+    setActiveHistory(id);
+    setMessages(target.messages.length ? target.messages : [WELCOME_MESSAGE]);
+    setInput("");
+    setShowPlanPanel(false);
+    saveActiveId(id);
+  }
+
+  function deleteChat(id: string, event: React.MouseEvent) {
+    event.stopPropagation();
+    if (isSending) return;
+    const remaining = sessions.filter((item) => item.id !== id);
+    if (remaining.length === 0) {
+      const created = createSession();
+      setSessions([created]);
+      setActiveHistory(created.id);
+      setMessages(created.messages);
+      saveSessions([created]);
+      saveActiveId(created.id);
+      return;
+    }
+    setSessions(remaining);
+    saveSessions(remaining);
+    if (id === activeHistory) {
+      setActiveHistory(remaining[0].id);
+      setMessages(remaining[0].messages);
+      saveActiveId(remaining[0].id);
+    }
+  }
+
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     isDragging.current = true;
     dragStartX.current = e.clientX;
@@ -364,7 +441,11 @@ export default function App() {
           <p className="text-xs text-slate-400">AI 여행 계획 도우미</p>
         </div>
         <div className="px-4 py-3">
-          <button className="w-full py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors flex items-center justify-center gap-1.5">
+          <button
+            onClick={startNewChat}
+            disabled={isSending}
+            className="w-full py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
             <span className="text-base leading-none">+</span> 새 여행 계획
           </button>
         </div>
@@ -372,19 +453,39 @@ export default function App() {
           <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">최근 계획</p>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 pb-4 space-y-1">
-          {HISTORY.map(item => (
-            <button key={item.id} onClick={() => setActiveHistory(item.id)}
-              className={["w-full text-left px-3 py-2.5 rounded-lg transition-colors border",
-                activeHistory===item.id ? "bg-blue-50 border-blue-200" : "hover:bg-white border-transparent",
-              ].join(" ")}
-            >
-              <div className="flex items-start justify-between gap-1">
-                <p className={["text-xs font-semibold leading-snug", activeHistory===item.id ? "text-blue-700" : "text-slate-700"].join(" ")}>{item.title}</p>
-                <span className="text-[10px] text-slate-400 shrink-0 mt-0.5">{item.date.slice(5)}</span>
-              </div>
-              <p className="text-[11px] text-slate-400 mt-0.5">{item.preview}</p>
-            </button>
-          ))}
+          {sessions.length === 0 ? (
+            <p className="px-3 py-6 text-[11px] text-slate-400 text-center">아직 저장된 대화가 없습니다</p>
+          ) : (
+            sessions.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => openChat(item.id)}
+                className={["w-full text-left px-3 py-2.5 rounded-lg transition-colors border group",
+                  activeHistory===item.id ? "bg-blue-50 border-blue-200" : "hover:bg-white border-transparent",
+                ].join(" ")}
+              >
+                <div className="flex items-start justify-between gap-1">
+                  <p className={["text-xs font-semibold leading-snug", activeHistory===item.id ? "text-blue-700" : "text-slate-700"].join(" ")}>{item.title}</p>
+                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                    <span className="text-[10px] text-slate-400">{item.date.slice(5)}</span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => deleteChat(item.id, event)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") deleteChat(item.id, event as unknown as React.MouseEvent);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 text-[11px] leading-none px-0.5"
+                      aria-label="대화 삭제"
+                    >
+                      ×
+                    </span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5 truncate">{item.preview || "새 대화"}</p>
+              </button>
+            ))
+          )}
         </nav>
         <div className="px-4 py-3 border-t border-slate-100">
           <div className="flex items-center gap-2">
@@ -401,7 +502,9 @@ export default function App() {
       <main className="flex-1 flex flex-col min-w-0">
         <header className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <div>
-            <h1 className="font-bold text-slate-800 text-base" style={{ fontFamily: "'Outfit', sans-serif" }}>여행 계획 수립</h1>
+            <h1 className="font-bold text-slate-800 text-base" style={{ fontFamily: "'Outfit', sans-serif" }}>
+              {sessions.find((item) => item.id === activeHistory)?.title || "여행 계획 수립"}
+            </h1>
             <p className="text-xs text-slate-400">AI와 함께 나만의 완벽한 여행을 계획하세요</p>
           </div>
           <div className="flex items-center gap-2">

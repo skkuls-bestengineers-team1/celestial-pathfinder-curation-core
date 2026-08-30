@@ -77,15 +77,12 @@ def search(request: SearchRequest) -> SearchResponse:
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     try:
-        from ..services.chat_service import process_question
-    except ImportError:
-        try:
-            from ..chat_service import process_question
-        except ImportError as error:
-            raise HTTPException(
-                status_code=503,
-                detail="chat_service.process_question()이 아직 연결되지 않았습니다.",
-            ) from error
+        from ..chat_service import process_question
+    except ImportError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"chat_service를 불러오지 못했습니다: {error}",
+        ) from error
 
     try:
         result = process_question(request.question)
