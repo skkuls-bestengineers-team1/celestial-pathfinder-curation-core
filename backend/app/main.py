@@ -3,6 +3,17 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+# backend/ 또는 프로젝트 루트 어디서 실행해도 src.* import가 되게 한다.
+_APP_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = _APP_DIR.parent
+_ROOT_DIR = _BACKEND_DIR.parent
+for _path in (_ROOT_DIR, _BACKEND_DIR):
+    _path_str = str(_path)
+    if _path_str not in sys.path:
+        sys.path.insert(0, _path_str)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
