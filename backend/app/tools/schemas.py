@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -10,6 +12,10 @@ class WeatherArguments(BaseModel):
 
     city: str = Field(min_length=1, max_length=100)
     days: int = Field(default=7, ge=1, le=16)
+    start_date: str | None = Field(
+        default=None,
+        description="여행 시작일 YYYY-MM-DD. 없으면 오늘부터 조회한다.",
+    )
 
     @field_validator("city")
     @classmethod
@@ -18,6 +24,20 @@ class WeatherArguments(BaseModel):
         if not city:
             raise ValueError("city는 비어 있을 수 없습니다.")
         return city
+
+    @field_validator("start_date")
+    @classmethod
+    def validate_start_date(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        start_date = value.strip()
+        if not start_date:
+            return None
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError as error:
+            raise ValueError("start_date는 YYYY-MM-DD 형식이어야 합니다.") from error
+        return start_date
 
 
 ARGUMENT_MODEL_MAP = {
@@ -56,7 +76,7 @@ def validate_arguments(function_name: str, arguments) -> dict:
         validated = model_class.model_validate(arguments)
         return {
             "valid": True,
-            "data": validated.model_dump(),
+            "data": validated.model_dump(exclude_none=True),
             "errors": [],
         }
     except ValidationError as error:
