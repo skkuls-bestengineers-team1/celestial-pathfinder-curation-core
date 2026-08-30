@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.rag import retrieve_context
+
 from . import llm, prompts
 from .tools.function_calling import run_tools
 
@@ -11,9 +13,9 @@ def process_question(question: str) -> dict:
 
     흐름: RAG context 조회 -> Tool 실행 -> Final Prompt 생성 -> Gemini 호출
     """
-    # TODO: RAG 완성되면 retrieve_context(question) 결과로 교체
-    rag_context = ""
-    sources: list[dict] = []
+    rag_result = retrieve_context(question)
+    rag_context = rag_result["context"]
+    sources = rag_result["sources"]
 
     tool_result = run_tools(question)
 
@@ -27,6 +29,6 @@ def process_question(question: str) -> dict:
 
     return {
         "answer": interaction.output_text,
-        "source": None,
+        "source": sources or None,
         "tool": tool_result,
     }

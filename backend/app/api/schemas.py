@@ -23,5 +23,5 @@ class ChatResponse(BaseModel):
 
     answer: str
     chat_id: str | None = None
-    source: str | None = None
+    source: list[dict[str, Any]] | None = None
     tool: dict[str, Any] | None = None

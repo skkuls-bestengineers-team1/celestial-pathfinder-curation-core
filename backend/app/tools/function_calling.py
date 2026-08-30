@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from google import genai
@@ -52,9 +54,20 @@ GET_WEATHER_TOOL = {
                 "type": "string",
                 "description": (
                     "여행 시작일. 반드시 YYYY-MM-DD. "
-                    "예: 9월 7일부터 3박 4일이면 start_date=2026-09-07, days=4. "
-                    "연도가 없으면 올해, 이미 지난 날짜면 내년. "
-                    "시작일을 말하지 않았을 때만 생략하고 오늘부터 조회한다."
+                    "연도가 없으면 system_instruction에 안내된 오늘 날짜를 기준으로 "
+                    "올해/내년을 판단하세요. "
+                    "시작일을 말하지 않았을 때만 생략하고 오늘부터 조회한다. "
+                    "season을 쓸 경우 start_date는 넣지 않는다."
+                ),
+            },
+            "season": {
+                "type": "string",
+                "enum": ["봄", "여름", "가을", "겨울"],
+                "description": (
+                    "사용자가 '여름에', '겨울쯤' 처럼 계절만 언급하고 "
+                    "구체적인 날짜나 기간을 말하지 않았을 때만 사용한다. "
+                    "이 경우 start_date는 생략하고, 실시간 예보 대신 "
+                    "해당 계절의 평균 날씨가 반환된다."
                 ),
             },
         },
@@ -64,15 +77,26 @@ GET_WEATHER_TOOL = {
 
 TOOLS = [GET_WEATHER_TOOL]
 
-SYSTEM_INSTRUCTION = """
+
+def _build_system_instruction() -> str:
+    """호출 시점의 실제 오늘 날짜를 프롬프트에 명시한다.
+
+    Gemini는 서버의 시스템 시계에 접근할 수 없어 "오늘"을 스스로 알 수 없다.
+    명시하지 않으면 모델이 임의로 연도를 추측해 오답을 낼 수 있다.
+    """
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    return f"""
 당신은 여행 일정 도우미입니다.
+오늘 날짜는 {today}입니다. 연도/날짜 관련 판단은 반드시 이 날짜를 기준으로 하세요.
 사용자가 특정 지역의 날씨, 비, 기온, 예보, 여행 일정을 물어보면 get_weather를 호출하세요.
 날씨가 필요 없는 질문에는 function을 호출하지 마세요.
 city는 실제 도시명이어야 합니다.
 days는 총 여행 일수입니다. 3박 4일이면 4, 없으면 7을 사용하세요.
-사용자가 "9월 7일부터"처럼 시작일을 말하면 반드시 start_date를 YYYY-MM-DD로 넣으세요.
-연도가 없으면 올해를 쓰고, 그 날짜가 이미 지났으면 내년을 쓰세요.
+사용자가 "9월 7일부터"처럼 구체적인 시작일을 말하면 반드시 start_date를 YYYY-MM-DD로 넣으세요.
+연도가 없으면 오늘({today}) 기준으로 올해를 쓰고, 그 날짜가 이미 지났으면 내년을 쓰세요.
 start_date가 없으면 오늘부터 조회됩니다. 시작일을 말했는데도 생략하지 마세요.
+사용자가 "여름에", "겨울쯤" 처럼 구체적인 날짜/기간 없이 계절만 언급했다면,
+start_date나 days를 오늘 기준으로 임의로 채우지 말고 season 파라미터에 해당 계절만 넣으세요.
 날씨 값을 추측해서 만들지 마세요.
 """
 
@@ -159,7 +183,7 @@ def run_tools(question: str) -> dict | None:
     interaction = client.interactions.create(
         model=MODEL_NAME,
         input=question,
-        system_instruction=SYSTEM_INSTRUCTION,
+        system_instruction=_build_system_instruction(),
         tools=TOOLS,
         generation_config={
             "tool_choice": "auto",

@@ -329,6 +329,51 @@ def _default_weather_for_date(target_date: date) -> dict:
     }
 
 
+def _season_average_weather(city: str, season: str) -> dict:
+    """구체적 날짜 없이 계절만 언급된 경우, 실시간 예보 대신 계절 평균을 반환한다."""
+    if season not in SEASON_DEFAULTS:
+        return _error_result(
+            "invalid_season",
+            "season은 봄/여름/가을/겨울 중 하나여야 합니다.",
+            retryable=False,
+            query=season,
+        )
+
+    location_result = geocode_city(city)
+    if not location_result.get("success"):
+        return location_result
+
+    location = location_result["data"]
+
+    defaults = SEASON_DEFAULTS[season]
+    weather_code = defaults["weather_code"]
+
+    return {
+        "success": True,
+        "source": "계절 평균 추정치 (실시간 예보 아님)",
+        "has_estimated_days": True,
+        "query": {"city": city, "season": season},
+        "location": location,
+        "units": {
+            "temperature": "°C",
+            "precipitation": "mm",
+            "precipitation_probability": "%",
+            "wind_speed": "km/h",
+        },
+        "season_average": {
+            "season": season,
+            "temp_max": defaults["temp_max"],
+            "temp_min": defaults["temp_min"],
+            "precipitation_sum": defaults["precipitation_sum"],
+            "precipitation_probability": defaults["precipitation_probability"],
+            "wind_speed_max": defaults["wind_speed_max"],
+            "weather_code": weather_code,
+            "weather_description": weather_code_to_text(weather_code),
+            "is_estimated": True,
+        },
+    }
+
+
 def _fetch_real_forecast(location: dict) -> dict:
     """오늘부터 16일간의 실제 Open-Meteo 예보를 date별 dict로 반환한다."""
     data = _request_json(
@@ -374,9 +419,26 @@ def _fetch_real_forecast(location: dict) -> dict:
     return {"by_date": by_date, "units": units}
 
 
-def get_weather(city: str, days: int = 7, start_date: str | None = None) -> dict:
-    """지역 날씨를 조회하고 dict로 반환한다. start_date가 있으면 그날부터 days일간 조회한다."""
+def get_weather(
+    city: str,
+    days: int = 7,
+    start_date: str | None = None,
+    season: str | None = None,
+) -> dict:
+    """지역 날씨를 조회하고 dict로 반환한다.
+
+    - start_date가 있으면 그날부터 days일간 실제 예보(+범위 밖은 계절 평균)를 조회한다.
+    - season만 있으면(구체적 날짜를 모를 때) 실시간 예보 없이 계절 평균만 반환한다.
+    """
     city = city.strip()
+
+    if season is not None:
+        try:
+            return _season_average_weather(city, season.strip())
+        except RetryableApiError as error:
+            return _error_result("weather_temporary_error", str(error), retryable=True)
+        except PermanentApiError as error:
+            return _error_result("weather_api_error", str(error), retryable=False)
 
     date_range = _resolve_date_range(days, start_date)
     if not date_range.get("success"):
