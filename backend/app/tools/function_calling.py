@@ -17,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 load_dotenv(ROOT_DIR / ".env")
 load_dotenv(ROOT_DIR / "backend" / ".env")
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 
 FUNCTION_MAP = {
     "get_weather": get_weather,
@@ -29,6 +29,7 @@ GET_WEATHER_TOOL = {
     "description": (
         "도시의 실제 날씨 예보를 조회합니다. "
         "여행 일정, 우천 여부, 기온, 강수 확률이 필요할 때 사용합니다. "
+        "사용자가 시작 날짜를 말하면 반드시 start_date를 넣으세요. "
         "날씨와 관련 없는 질문에는 호출하지 않습니다."
     ),
     "parameters": {
@@ -40,9 +41,21 @@ GET_WEATHER_TOOL = {
             },
             "days": {
                 "type": "integer",
-                "description": "예보 일수. 기본값 7, 최소 1, 최대 16",
+                "description": (
+                    "여행 총 일수. 3박 4일이면 4. "
+                    "기본값 7, 최소 1, 최대 16"
+                ),
                 "minimum": 1,
                 "maximum": 16,
+            },
+            "start_date": {
+                "type": "string",
+                "description": (
+                    "여행 시작일. 반드시 YYYY-MM-DD. "
+                    "예: 9월 7일부터 3박 4일이면 start_date=2026-09-07, days=4. "
+                    "연도가 없으면 올해, 이미 지난 날짜면 내년. "
+                    "시작일을 말하지 않았을 때만 생략하고 오늘부터 조회한다."
+                ),
             },
         },
         "required": ["city"],
@@ -53,9 +66,13 @@ TOOLS = [GET_WEATHER_TOOL]
 
 SYSTEM_INSTRUCTION = """
 당신은 여행 일정 도우미입니다.
-사용자가 특정 지역의 날씨, 비, 기온, 예보를 물어보면 get_weather를 호출하세요.
+사용자가 특정 지역의 날씨, 비, 기온, 예보, 여행 일정을 물어보면 get_weather를 호출하세요.
 날씨가 필요 없는 질문에는 function을 호출하지 마세요.
-city는 실제 도시명이어야 합니다. days는 사용자가 말한 여행 기간을 사용하고, 없으면 7을 사용하세요.
+city는 실제 도시명이어야 합니다.
+days는 총 여행 일수입니다. 3박 4일이면 4, 없으면 7을 사용하세요.
+사용자가 "9월 7일부터"처럼 시작일을 말하면 반드시 start_date를 YYYY-MM-DD로 넣으세요.
+연도가 없으면 올해를 쓰고, 그 날짜가 이미 지났으면 내년을 쓰세요.
+start_date가 없으면 오늘부터 조회됩니다. 시작일을 말했는데도 생략하지 마세요.
 날씨 값을 추측해서 만들지 마세요.
 """
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -213,9 +215,83 @@ def geocode_city(city: str) -> dict:
     )
 
 
-def get_weather(city: str, days: int = 7) -> dict:
-    """지역 날씨를 조회하고 dict로 반환한다."""
+def _today() -> date:
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+def _parse_start_date(start_date: str | None) -> date | None:
+    if start_date is None:
+        return None
+    value = str(start_date).strip()
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _resolve_date_range(days: int, start_date: str | None) -> dict:
+    today = _today()
+    raw = None if start_date is None else str(start_date).strip()
+    if raw:
+        start = _parse_start_date(raw)
+        if start is None:
+            return _error_result(
+                "invalid_start_date",
+                "start_date는 YYYY-MM-DD 형식이어야 합니다.",
+                retryable=False,
+                query=start_date,
+            )
+    else:
+        start = today
+    end = start + timedelta(days=max(days, 1) - 1)
+
+    if end < start:
+        return _error_result(
+            "invalid_date_range",
+            "종료일이 시작일보다 앞설 수 없습니다.",
+            retryable=False,
+        )
+
+    if (end - start).days + 1 > 16:
+        return _error_result(
+            "date_range_too_long",
+            "한 번에 조회할 수 있는 기간은 최대 16일입니다.",
+            retryable=False,
+            query={"start_date": start.isoformat(), "end_date": end.isoformat()},
+        )
+
+    forecast_horizon = today + timedelta(days=15)
+    if start > forecast_horizon or end > forecast_horizon:
+        return _error_result(
+            "date_out_of_forecast_range",
+            "해당 날짜는 Open-Meteo 예보 범위(오늘부터 약 16일)를 벗어났습니다. 날씨를 추측하지 않습니다.",
+            retryable=False,
+            query={
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "forecast_until": forecast_horizon.isoformat(),
+            },
+        )
+
+    return {
+        "success": True,
+        "start": start,
+        "end": end,
+    }
+
+
+def get_weather(city: str, days: int = 7, start_date: str | None = None) -> dict:
+    """지역 날씨를 조회하고 dict로 반환한다. start_date가 있으면 그날부터 days일간 조회한다."""
     city = city.strip()
+
+    date_range = _resolve_date_range(days, start_date)
+    if not date_range.get("success"):
+        return date_range
+
+    start: date = date_range["start"]
+    end: date = date_range["end"]
 
     try:
         location_result = geocode_city(city)
@@ -237,7 +313,8 @@ def get_weather(city: str, days: int = 7) -> dict:
                     "precipitation_probability_max,"
                     "wind_speed_10m_max"
                 ),
-                "forecast_days": days,
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
                 "timezone": "auto",
             },
         )
@@ -253,11 +330,11 @@ def get_weather(city: str, days: int = 7) -> dict:
 
         units = data.get("daily_units") or {}
         forecast = []
-        for index, date in enumerate(dates):
+        for index, forecast_date in enumerate(dates):
             weather_code = _list_get(daily.get("weather_code"), index)
             forecast.append(
                 {
-                    "date": date,
+                    "date": forecast_date,
                     "temp_max": _list_get(daily.get("temperature_2m_max"), index),
                     "temp_min": _list_get(daily.get("temperature_2m_min"), index),
                     "precipitation_sum": _list_get(daily.get("precipitation_sum"), index),
@@ -277,6 +354,8 @@ def get_weather(city: str, days: int = 7) -> dict:
             "query": {
                 "city": city,
                 "days": days,
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
             },
             "location": location,
             "units": {
