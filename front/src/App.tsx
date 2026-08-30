@@ -1,4 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas-pro";
 import {
   type ChatSession,
   type StoredMessage as Message,
@@ -26,7 +30,14 @@ const CATEGORIES = [
   { id: "solo", label: "혼자 여행", icon: "🎒" },
 ];
 
-const PLAN_REGIONS = ["서울", "경기", "인천", "강원", "충청", "경상", "전라", "제주"];
+const SEASONS = ["봄", "여름", "가을", "겨울"];
+const DURATION_OPTIONS = [
+  { label: "당일치기", nights: 0 },
+  { label: "1박 2일", nights: 1 },
+  { label: "2박 3일", nights: 2 },
+  { label: "3박 4일", nights: 3 },
+  { label: "4박 5일", nights: 4 },
+];
 const TRANSPORTS = [
   { id: "walk", label: "도보", icon: "🚶" },
   { id: "public", label: "대중교통", icon: "🚌" },
@@ -163,6 +174,33 @@ type SearchResultItem = {
   rlteRank: number;
 };
 
+function BotMarkdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+        h1: ({ children }) => <h3 className="font-bold text-slate-800 mt-3 mb-1.5 first:mt-0">{children}</h3>,
+        h2: ({ children }) => <h3 className="font-bold text-slate-800 mt-3 mb-1.5 first:mt-0">{children}</h3>,
+        h3: ({ children }) => <h4 className="font-semibold text-slate-800 mt-2.5 mb-1 first:mt-0">{children}</h4>,
+        strong: ({ children }) => <strong className="font-semibold text-slate-800">{children}</strong>,
+        ul: ({ children }) => <ul className="list-disc pl-4 mb-2 space-y-0.5 last:mb-0">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5 last:mb-0">{children}</ol>,
+        li: ({ children }) => <li>{children}</li>,
+        a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline">{children}</a>,
+        code: ({ children }) => <code className="bg-slate-100 px-1 py-0.5 rounded text-[12px]">{children}</code>,
+        hr: () => <hr className="my-2 border-slate-200" />,
+        blockquote: ({ children }) => <blockquote className="border-l-2 border-blue-200 pl-2 text-slate-500 my-2">{children}</blockquote>,
+        table: ({ children }) => <div className="overflow-x-auto mb-2"><table className="text-xs border-collapse">{children}</table></div>,
+        th: ({ children }) => <th className="border border-slate-200 px-2 py-1 bg-slate-50 text-left">{children}</th>,
+        td: ({ children }) => <td className="border border-slate-200 px-2 py-1">{children}</td>,
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -171,8 +209,11 @@ export default function App() {
   const [showPlanPanel, setShowPlanPanel] = useState(false);
   const [activeTab, setActiveTab] = useState<PlanTab>("region");
   const [selectedCategories, setSelectedCategories] = useState<string[]>(["healing"]);
-  const [planRegion, setPlanRegion] = useState<string | null>(null);
+  const [planDistrict, setPlanDistrict] = useState<string | null>(null);
+  const [dateMode, setDateMode] = useState<"calendar" | "season">("calendar");
   const [dateRange, setDateRange] = useState<[Date | null, Date | null]>([null, null]);
+  const [planSeason, setPlanSeason] = useState<string | null>(null);
+  const [planNights, setPlanNights] = useState<number | null>(null);
   const [transport, setTransport] = useState<string | null>(null);
   const [activeHistory, setActiveHistory] = useState<string | null>(null);
   const historyReady = useRef(false);
@@ -388,12 +429,10 @@ export default function App() {
     return () => { window.removeEventListener("mousemove", onMouseMove); window.removeEventListener("mouseup", onMouseUp); };
   }, []);
 
-  async function sendMessage() {
-    const text = input.trim();
-    if (!text || isSending) return;
+  async function submitQuestion(text: string, options?: { isPlan?: boolean }) {
+    if (!text.trim() || isSending) return;
 
     setMessages(prev => [...prev, { id: Date.now(), role: "user", text, time: nowLabel() }]);
-    setInput("");
     setIsSending(true);
 
     try {
@@ -409,13 +448,103 @@ export default function App() {
       }
 
       const data: { answer: string } = await response.json();
-      setMessages(prev => [...prev, { id: Date.now() + 1, role: "bot", text: data.answer, time: nowLabel() }]);
+      setMessages(prev => [...prev, { id: Date.now() + 1, role: "bot", text: data.answer, time: nowLabel(), isPlan: options?.isPlan }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.";
       setMessages(prev => [...prev, { id: Date.now() + 1, role: "bot", text: `⚠️ 답변을 가져오지 못했어요: ${message}`, time: nowLabel() }]);
     } finally {
       setIsSending(false);
     }
+  }
+
+  async function sendMessage() {
+    const text = input.trim();
+    if (!text) return;
+    setInput("");
+    await submitQuestion(text);
+  }
+
+  const messageContentRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const [downloadingId, setDownloadingId] = useState<number | null>(null);
+
+  async function downloadMessageAsPdf(messageId: number) {
+    const node = messageContentRefs.current[messageId];
+    if (!node) return;
+    setDownloadingId(messageId);
+    try {
+      const canvas = await html2canvas(node, { scale: 2, backgroundColor: "#ffffff" });
+      const imgData = canvas.toDataURL("image/png");
+
+      const pdf = new jsPDF({ unit: "mm", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 10;
+      const usableWidth = pageWidth - margin * 2;
+      const usableHeight = pageHeight - margin * 2;
+      const imgHeight = (canvas.height * usableWidth) / canvas.width;
+
+      let heightLeft = imgHeight;
+      let position = margin;
+
+      pdf.addImage(imgData, "PNG", margin, position, usableWidth, imgHeight);
+      heightLeft -= usableHeight;
+
+      while (heightLeft > 0) {
+        position = margin - (imgHeight - heightLeft);
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", margin, position, usableWidth, imgHeight);
+        heightLeft -= usableHeight;
+      }
+
+      pdf.save(`여행일정_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (error) {
+      console.error("PDF 저장 실패:", error);
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`PDF 저장에 실패했어요: ${message}`);
+    } finally {
+      setDownloadingId(null);
+    }
+  }
+
+  function withRoParticle(word: string): string {
+    const lastChar = word.charCodeAt(word.length - 1) - 0xAC00;
+    if (lastChar < 0 || lastChar > 11171) return `${word}로`;
+    const jong = lastChar % 28;
+    return jong === 0 || jong === 8 ? `${word}로` : `${word}으로`;
+  }
+
+  function buildPlanQuestion(): string {
+    const parts: string[] = [];
+
+    if (planDistrict) parts.push(`${planDistrict}로 여행을 가려고 해.`);
+
+    if (dateMode === "calendar" && dateRange[0]) {
+      const start = dateRange[0];
+      const end = dateRange[1] ?? dateRange[0];
+      const nights = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
+      parts.push(`${start.getMonth()+1}월 ${start.getDate()}일부터 ${nights}박 ${nights+1}일 일정이야.`);
+    } else if (dateMode === "season" && planSeason) {
+      if (planNights === 0) {
+        parts.push(`${planSeason}에 당일치기로 갈 예정이야.`);
+      } else if (planNights !== null) {
+        parts.push(`${planSeason}에 ${planNights}박 ${planNights+1}일 일정으로 갈 예정이야.`);
+      } else {
+        parts.push(`${planSeason}에 갈 예정이야.`);
+      }
+    }
+
+    if (selectedCategories.length) {
+      const labels = selectedCategories.map(id => CATEGORIES.find(c=>c.id===id)?.label).filter(Boolean).join(", ");
+      parts.push(`${labels} 스타일 여행을 원해.`);
+    }
+
+    if (transport) {
+      const label = TRANSPORTS.find(t=>t.id===transport)?.label;
+      if (label) parts.push(`이동은 ${withRoParticle(label)} 할 거야.`);
+    }
+
+    parts.push("이 조건으로 여행 일정을 짜줘.");
+    return parts.join(" ");
   }
 
   function toggleCategory(id: string) {
@@ -520,9 +649,22 @@ export default function App() {
                 <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm shrink-0">✈</div>
               )}
               <div className={["max-w-[72%] flex flex-col gap-1", msg.role==="user" ? "items-end" : "items-start"].join(" ")}>
-                <div className={["px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-line",
-                  msg.role==="user" ? "bg-blue-600 text-white rounded-tr-sm" : "bg-slate-50 text-slate-700 border border-slate-100 rounded-tl-sm",
-                ].join(" ")}>{msg.text}</div>
+                <div
+                  ref={msg.role==="bot" ? (el => { messageContentRefs.current[msg.id] = el; }) : undefined}
+                  className={["px-4 py-3 rounded-2xl text-sm leading-relaxed",
+                    msg.role==="user" ? "bg-blue-600 text-white rounded-tr-sm whitespace-pre-line" : "bg-slate-50 text-slate-700 border border-slate-100 rounded-tl-sm",
+                  ].join(" ")}>
+                  {msg.role==="bot" ? <BotMarkdown text={msg.text} /> : msg.text}
+                </div>
+                {msg.isPlan && (
+                  <button
+                    onClick={() => downloadMessageAsPdf(msg.id)}
+                    disabled={downloadingId===msg.id}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-blue-200 text-blue-600 text-[11px] font-medium hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <span>📄</span>{downloadingId===msg.id ? "PDF 생성 중..." : "PDF로 저장"}
+                  </button>
+                )}
                 <span className="text-[10px] text-slate-400">{msg.time}</span>
               </div>
             </div>
@@ -554,18 +696,55 @@ export default function App() {
             <div className="p-4">
               {activeTab==="region" && (
                 <div>
-                  <p className="text-xs text-slate-500 mb-3">여행하실 지역을 선택하세요</p>
-                  <div className="grid grid-cols-4 gap-2">
-                    {PLAN_REGIONS.map(r => (
-                      <button key={r} onClick={() => setPlanRegion(r)}
+                  <p className="text-xs text-slate-500 mb-3">여행하실 구를 선택하세요</p>
+                  <div className="grid grid-cols-4 gap-2 max-h-56 overflow-y-auto">
+                    {SEOUL_DISTRICTS_FULL.map(r => (
+                      <button key={r} onClick={() => setPlanDistrict(r)}
                         className={["py-2 rounded-lg text-sm font-medium border transition-colors",
-                          planRegion===r ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300 hover:text-blue-600",
+                          planDistrict===r ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300 hover:text-blue-600",
                         ].join(" ")}>{r}</button>
                     ))}
                   </div>
                 </div>
               )}
-              {activeTab==="date" && <CalendarPicker selected={dateRange} onSelect={setDateRange} />}
+              {activeTab==="date" && (
+                <div>
+                  <div className="flex gap-2 mb-3">
+                    <button onClick={() => setDateMode("calendar")}
+                      className={["flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+                        dateMode==="calendar" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300",
+                      ].join(" ")}>특정 날짜</button>
+                    <button onClick={() => setDateMode("season")}
+                      className={["flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+                        dateMode==="season" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300",
+                      ].join(" ")}>계절만</button>
+                  </div>
+                  {dateMode==="calendar" ? (
+                    <CalendarPicker selected={dateRange} onSelect={setDateRange} />
+                  ) : (
+                    <div>
+                      <p className="text-[11px] text-slate-400 mb-2">계절</p>
+                      <div className="grid grid-cols-4 gap-2 mb-3">
+                        {SEASONS.map(s => (
+                          <button key={s} onClick={() => setPlanSeason(s)}
+                            className={["py-2 rounded-lg text-sm font-medium border transition-colors",
+                              planSeason===s ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300 hover:text-blue-600",
+                            ].join(" ")}>{s}</button>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-slate-400 mb-2">여행 기간</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        {DURATION_OPTIONS.map(d => (
+                          <button key={d.label} onClick={() => setPlanNights(d.nights)}
+                            className={["py-2 rounded-lg text-xs font-medium border transition-colors",
+                              planNights===d.nights ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300 hover:text-blue-600",
+                            ].join(" ")}>{d.label}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               {activeTab==="style" && (
                 <div>
                   <p className="text-xs text-slate-500 mb-3">관심 있는 여행 스타일을 선택하세요 (복수 선택)</p>
@@ -602,26 +781,16 @@ export default function App() {
               )}
               <div className="mt-4 flex items-center justify-between gap-2">
                 <div className="flex flex-wrap gap-1.5">
-                  {planRegion && <span className="bg-white border border-blue-200 text-blue-600 text-[11px] px-2 py-0.5 rounded-full">{planRegion}</span>}
-                  {dateRange[0] && <span className="bg-white border border-blue-200 text-blue-600 text-[11px] px-2 py-0.5 rounded-full">{dateRange[0].getMonth()+1}/{dateRange[0].getDate()}{dateRange[1]?`~${dateRange[1].getMonth()+1}/${dateRange[1].getDate()}`:""}</span>}
+                  {planDistrict && <span className="bg-white border border-blue-200 text-blue-600 text-[11px] px-2 py-0.5 rounded-full">{planDistrict}</span>}
+                  {dateMode==="calendar" && dateRange[0] && <span className="bg-white border border-blue-200 text-blue-600 text-[11px] px-2 py-0.5 rounded-full">{dateRange[0].getMonth()+1}/{dateRange[0].getDate()}{dateRange[1]?`~${dateRange[1].getMonth()+1}/${dateRange[1].getDate()}`:""}</span>}
+                  {dateMode==="season" && planSeason && <span className="bg-white border border-blue-200 text-blue-600 text-[11px] px-2 py-0.5 rounded-full">{planSeason}{planNights!==null ? (planNights===0 ? " · 당일치기" : ` · ${planNights}박 ${planNights+1}일`) : ""}</span>}
                   {selectedCategories.length>0 && <span className="bg-white border border-blue-200 text-blue-600 text-[11px] px-2 py-0.5 rounded-full">{CATEGORIES.find(c=>c.id===selectedCategories[0])?.label}{selectedCategories.length>1?` 외 ${selectedCategories.length-1}`:""}</span>}
                   {transport && <span className="bg-white border border-blue-200 text-blue-600 text-[11px] px-2 py-0.5 rounded-full">{TRANSPORTS.find(t=>t.id===transport)?.label}</span>}
                 </div>
                 <button onClick={() => {
                   setShowPlanPanel(false);
-                  const parts: string[] = [];
-                  if (planRegion) parts.push(`📍 ${planRegion}`);
-                  if (dateRange[0]) parts.push(`📅 ${dateRange[0].getMonth()+1}/${dateRange[0].getDate()}${dateRange[1]?`~${dateRange[1].getMonth()+1}/${dateRange[1].getDate()}`:""}`);
-                  if (selectedCategories.length) parts.push(`🎒 ${selectedCategories.map(id=>CATEGORIES.find(c=>c.id===id)?.label).join(", ")}`);
-                  if (transport) parts.push(`${TRANSPORTS.find(t=>t.id===transport)?.icon} ${TRANSPORTS.find(t=>t.id===transport)?.label}`);
-                  const summary = parts.length ? parts.join(" · ") : "기본 옵션";
-                  const now = new Date();
-                  const time = `${now.getHours()}:${String(now.getMinutes()).padStart(2,"0")}`;
-                  setMessages(prev => [...prev, { id: Date.now(), role: "user", text: `계획 수립 요청:\n${summary}`, time }]);
-                  setTimeout(() => {
-                    setMessages(prev => [...prev, { id: Date.now()+1, role: "bot", text: `선택하신 옵션으로 맞춤 여행 일정을 준비하고 있습니다! 🗺️\n\n${summary}\n\n잠시 후 최적의 여행 코스를 추천해드릴게요.`, time }]);
-                  }, 800);
-                }} className="shrink-0 px-4 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors">
+                  submitQuestion(buildPlanQuestion(), { isPlan: true });
+                }} disabled={isSending} className="shrink-0 px-4 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                   적용하기
                 </button>
               </div>

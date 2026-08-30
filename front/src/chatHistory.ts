@@ -3,6 +3,7 @@ export type StoredMessage = {
   role: "user" | "bot";
   text: string;
   time: string;
+  isPlan?: boolean;
 };
 
 export type ChatSession = {
