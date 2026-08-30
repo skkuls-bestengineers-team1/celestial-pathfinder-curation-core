@@ -23,5 +23,39 @@ class ChatResponse(BaseModel):
 
     answer: str
     chat_id: str | None = None
-    source: str | None = None
+    source: list[dict[str, Any]] | None = None
     tool: dict[str, Any] | None = None
+
+
+class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    year: str
+    month: str
+    areaNm: str
+    signguNm: str
+    rlteCtgryLclsNm: str
+    rlteCtgryMclsNm: str
+    rlteCtgrySclsNm: str
+    tAtsNm: str = ""
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=5, ge=1, le=50)
+
+
+class SearchResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    items: list[dict[str, Any]]
+    page: int
+    page_size: int
+    total_count: int
+
+
+class CategoryCombo(BaseModel):
+    lcls: str
+    mcls: str
+    scls: str
+
+
+class CategoriesResponse(BaseModel):
+    items: list[CategoryCombo]

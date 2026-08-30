@@ -16,6 +16,10 @@ class WeatherArguments(BaseModel):
         default=None,
         description="여행 시작일 YYYY-MM-DD. 없으면 오늘부터 조회한다.",
     )
+    season: str | None = Field(
+        default=None,
+        description="봄/여름/가을/겨울 중 하나. 구체적 날짜 없이 계절만 언급됐을 때만 사용.",
+    )
 
     @field_validator("city")
     @classmethod
@@ -38,6 +42,18 @@ class WeatherArguments(BaseModel):
         except ValueError as error:
             raise ValueError("start_date는 YYYY-MM-DD 형식이어야 합니다.") from error
         return start_date
+
+    @field_validator("season")
+    @classmethod
+    def validate_season(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        season = value.strip()
+        if not season:
+            return None
+        if season not in {"봄", "여름", "가을", "겨울"}:
+            raise ValueError("season은 봄/여름/가을/겨울 중 하나여야 합니다.")
+        return season
 
 
 ARGUMENT_MODEL_MAP = {

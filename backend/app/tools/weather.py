@@ -232,7 +232,6 @@ def _parse_start_date(start_date: str | None) -> date | None:
 
 
 def _resolve_date_range(days: int, start_date: str | None) -> dict:
-    today = _today()
     raw = None if start_date is None else str(start_date).strip()
     if raw:
         start = _parse_start_date(raw)
@@ -244,7 +243,7 @@ def _resolve_date_range(days: int, start_date: str | None) -> dict:
                 query=start_date,
             )
     else:
-        start = today
+        start = _today()
     end = start + timedelta(days=max(days, 1) - 1)
 
     if end < start:
@@ -254,27 +253,6 @@ def _resolve_date_range(days: int, start_date: str | None) -> dict:
             retryable=False,
         )
 
-    if (end - start).days + 1 > 16:
-        return _error_result(
-            "date_range_too_long",
-            "한 번에 조회할 수 있는 기간은 최대 16일입니다.",
-            retryable=False,
-            query={"start_date": start.isoformat(), "end_date": end.isoformat()},
-        )
-
-    forecast_horizon = today + timedelta(days=15)
-    if start > forecast_horizon or end > forecast_horizon:
-        return _error_result(
-            "date_out_of_forecast_range",
-            "해당 날짜는 Open-Meteo 예보 범위(오늘부터 약 16일)를 벗어났습니다. 날씨를 추측하지 않습니다.",
-            retryable=False,
-            query={
-                "start_date": start.isoformat(),
-                "end_date": end.isoformat(),
-                "forecast_until": forecast_horizon.isoformat(),
-            },
-        )
-
     return {
         "success": True,
         "start": start,
@@ -282,9 +260,185 @@ def _resolve_date_range(days: int, start_date: str | None) -> dict:
     }
 
 
-def get_weather(city: str, days: int = 7, start_date: str | None = None) -> dict:
-    """지역 날씨를 조회하고 dict로 반환한다. start_date가 있으면 그날부터 days일간 조회한다."""
+# 월(1~12) -> 계절. 기상학상 봄 3~5월, 여름 6~8월, 가을 9~11월, 겨울 12~2월.
+SEASON_BY_MONTH = {
+    3: "봄", 4: "봄", 5: "봄",
+    6: "여름", 7: "여름", 8: "여름",
+    9: "가을", 10: "가을", 11: "가을",
+    12: "겨울", 1: "겨울", 2: "겨울",
+}
+
+# 대한민국 평년 기후 기준 계절별 디폴트 날씨. 예보 범위(오늘부터 약 16일) 밖의
+# 날짜에 대해 "정확한 예보"가 아닌 "계절 평균 추정치"로 사용한다.
+SEASON_DEFAULTS = {
+    "봄": {
+        "temp_max": 18.0,
+        "temp_min": 7.0,
+        "precipitation_sum": 2.5,
+        "precipitation_probability": 30,
+        "wind_speed_max": 12.0,
+        "weather_code": 1,
+    },
+    "여름": {
+        "temp_max": 30.0,
+        "temp_min": 23.0,
+        "precipitation_sum": 8.0,
+        "precipitation_probability": 55,
+        "wind_speed_max": 10.0,
+        "weather_code": 80,
+    },
+    "가을": {
+        "temp_max": 20.0,
+        "temp_min": 10.0,
+        "precipitation_sum": 2.0,
+        "precipitation_probability": 30,
+        "wind_speed_max": 10.0,
+        "weather_code": 1,
+    },
+    "겨울": {
+        "temp_max": 5.0,
+        "temp_min": -4.0,
+        "precipitation_sum": 1.0,
+        "precipitation_probability": 20,
+        "wind_speed_max": 12.0,
+        "weather_code": 71,
+    },
+}
+
+
+def _season_for_month(month: int) -> str:
+    return SEASON_BY_MONTH[month]
+
+
+def _default_weather_for_date(target_date: date) -> dict:
+    """예보 범위 밖 날짜에 사용할 계절 평균 추정 날씨."""
+    season = _season_for_month(target_date.month)
+    defaults = SEASON_DEFAULTS[season]
+    weather_code = defaults["weather_code"]
+    return {
+        "date": target_date.isoformat(),
+        "temp_max": defaults["temp_max"],
+        "temp_min": defaults["temp_min"],
+        "precipitation_sum": defaults["precipitation_sum"],
+        "precipitation_probability": defaults["precipitation_probability"],
+        "wind_speed_max": defaults["wind_speed_max"],
+        "weather_code": weather_code,
+        "weather_description": weather_code_to_text(weather_code),
+        "is_estimated": True,
+        "season": season,
+    }
+
+
+def _season_average_weather(city: str, season: str) -> dict:
+    """구체적 날짜 없이 계절만 언급된 경우, 실시간 예보 대신 계절 평균을 반환한다."""
+    if season not in SEASON_DEFAULTS:
+        return _error_result(
+            "invalid_season",
+            "season은 봄/여름/가을/겨울 중 하나여야 합니다.",
+            retryable=False,
+            query=season,
+        )
+
+    location_result = geocode_city(city)
+    if not location_result.get("success"):
+        return location_result
+
+    location = location_result["data"]
+
+    defaults = SEASON_DEFAULTS[season]
+    weather_code = defaults["weather_code"]
+
+    return {
+        "success": True,
+        "source": "계절 평균 추정치 (실시간 예보 아님)",
+        "has_estimated_days": True,
+        "query": {"city": city, "season": season},
+        "location": location,
+        "units": {
+            "temperature": "°C",
+            "precipitation": "mm",
+            "precipitation_probability": "%",
+            "wind_speed": "km/h",
+        },
+        "season_average": {
+            "season": season,
+            "temp_max": defaults["temp_max"],
+            "temp_min": defaults["temp_min"],
+            "precipitation_sum": defaults["precipitation_sum"],
+            "precipitation_probability": defaults["precipitation_probability"],
+            "wind_speed_max": defaults["wind_speed_max"],
+            "weather_code": weather_code,
+            "weather_description": weather_code_to_text(weather_code),
+            "is_estimated": True,
+        },
+    }
+
+
+def _fetch_real_forecast(location: dict) -> dict:
+    """오늘부터 16일간의 실제 Open-Meteo 예보를 date별 dict로 반환한다."""
+    data = _request_json(
+        WEATHER_URL,
+        {
+            "latitude": location["latitude"],
+            "longitude": location["longitude"],
+            "daily": (
+                "weather_code,"
+                "temperature_2m_max,"
+                "temperature_2m_min,"
+                "precipitation_sum,"
+                "precipitation_probability_max,"
+                "wind_speed_10m_max"
+            ),
+            "forecast_days": 16,
+            "timezone": "auto",
+        },
+    )
+
+    daily = data.get("daily") or {}
+    dates = daily.get("time") or []
+    units = data.get("daily_units") or {}
+
+    by_date: dict[str, dict] = {}
+    for index, forecast_date in enumerate(dates):
+        weather_code = _list_get(daily.get("weather_code"), index)
+        by_date[forecast_date] = {
+            "date": forecast_date,
+            "temp_max": _list_get(daily.get("temperature_2m_max"), index),
+            "temp_min": _list_get(daily.get("temperature_2m_min"), index),
+            "precipitation_sum": _list_get(daily.get("precipitation_sum"), index),
+            "precipitation_probability": _list_get(
+                daily.get("precipitation_probability_max"),
+                index,
+            ),
+            "wind_speed_max": _list_get(daily.get("wind_speed_10m_max"), index),
+            "weather_code": weather_code,
+            "weather_description": weather_code_to_text(weather_code),
+            "is_estimated": False,
+        }
+
+    return {"by_date": by_date, "units": units}
+
+
+def get_weather(
+    city: str,
+    days: int = 7,
+    start_date: str | None = None,
+    season: str | None = None,
+) -> dict:
+    """지역 날씨를 조회하고 dict로 반환한다.
+
+    - start_date가 있으면 그날부터 days일간 실제 예보(+범위 밖은 계절 평균)를 조회한다.
+    - season만 있으면(구체적 날짜를 모를 때) 실시간 예보 없이 계절 평균만 반환한다.
+    """
     city = city.strip()
+
+    if season is not None:
+        try:
+            return _season_average_weather(city, season.strip())
+        except RetryableApiError as error:
+            return _error_result("weather_temporary_error", str(error), retryable=True)
+        except PermanentApiError as error:
+            return _error_result("weather_api_error", str(error), retryable=False)
 
     date_range = _resolve_date_range(days, start_date)
     if not date_range.get("success"):
@@ -300,57 +454,35 @@ def get_weather(city: str, days: int = 7, start_date: str | None = None) -> dict
 
         location = location_result["data"]
 
-        data = _request_json(
-            WEATHER_URL,
-            {
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
-                "daily": (
-                    "weather_code,"
-                    "temperature_2m_max,"
-                    "temperature_2m_min,"
-                    "precipitation_sum,"
-                    "precipitation_probability_max,"
-                    "wind_speed_10m_max"
-                ),
-                "start_date": start.isoformat(),
-                "end_date": end.isoformat(),
-                "timezone": "auto",
-            },
-        )
-
-        daily = data.get("daily") or {}
-        dates = daily.get("time") or []
-        if not dates:
+        real = _fetch_real_forecast(location)
+        if not real["by_date"]:
             return _error_result(
                 "weather_data_missing",
                 "날씨 데이터가 없습니다.",
                 retryable=False,
             )
 
-        units = data.get("daily_units") or {}
         forecast = []
-        for index, forecast_date in enumerate(dates):
-            weather_code = _list_get(daily.get("weather_code"), index)
-            forecast.append(
-                {
-                    "date": forecast_date,
-                    "temp_max": _list_get(daily.get("temperature_2m_max"), index),
-                    "temp_min": _list_get(daily.get("temperature_2m_min"), index),
-                    "precipitation_sum": _list_get(daily.get("precipitation_sum"), index),
-                    "precipitation_probability": _list_get(
-                        daily.get("precipitation_probability_max"),
-                        index,
-                    ),
-                    "wind_speed_max": _list_get(daily.get("wind_speed_10m_max"), index),
-                    "weather_code": weather_code,
-                    "weather_description": weather_code_to_text(weather_code),
-                }
-            )
+        has_estimated = False
+        current = start
+        while current <= end:
+            entry = real["by_date"].get(current.isoformat())
+            if entry is None:
+                entry = _default_weather_for_date(current)
+                has_estimated = True
+            forecast.append(entry)
+            current += timedelta(days=1)
+
+        units = real["units"]
 
         return {
             "success": True,
-            "source": "Open-Meteo",
+            "source": (
+                "Open-Meteo 실제 예보 + 계절 평균 추정 혼합"
+                if has_estimated
+                else "Open-Meteo"
+            ),
+            "has_estimated_days": has_estimated,
             "query": {
                 "city": city,
                 "days": days,
@@ -359,10 +491,10 @@ def get_weather(city: str, days: int = 7, start_date: str | None = None) -> dict
             },
             "location": location,
             "units": {
-                "temperature": units.get("temperature_2m_max"),
-                "precipitation": units.get("precipitation_sum"),
-                "precipitation_probability": units.get("precipitation_probability_max"),
-                "wind_speed": units.get("wind_speed_10m_max"),
+                "temperature": units.get("temperature_2m_max", "°C"),
+                "precipitation": units.get("precipitation_sum", "mm"),
+                "precipitation_probability": units.get("precipitation_probability_max", "%"),
+                "wind_speed": units.get("wind_speed_10m_max", "km/h"),
             },
             "forecast": forecast,
         }
