@@ -1,6 +1,7 @@
 streamlit
 google-generativeai
 google-genai
+langgraph
 fastapi
 uvicorn
 pydantic
